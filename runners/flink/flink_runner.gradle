@@ -129,12 +129,25 @@ test {
   }
 }
 
+repositories {
+  mavenLocal()
+  maven {
+    url "https://bbc1.sics.se/archiva/repository/Hops/"
+  }
+}
+
 configurations {
   validatesRunner
   miniCluster
 }
 
 dependencies {
+  compile "org.apache.flink:flink-streaming-java_2.11:$flink_version"
+  compile "org.apache.flink:flink-runtime_2.11:1.12-SNAPSHOT"
+  compile "org.apache.flink:flink-statebackend-rocksdb_2.11:1.12-SNAPSHOT"
+  compile "org.apache.flink:flink-statebackend-ndb_2.11:1.12-SNAPSHOT"
+  compile "com.mysql.ndb:clusterj-hops-fix:7.6.9"
+
   compileOnly project(":sdks:java:build-tools")
   compile library.java.vendored_guava_26_0_jre
   compile project(path: ":sdks:java:core", configuration: "shadow")

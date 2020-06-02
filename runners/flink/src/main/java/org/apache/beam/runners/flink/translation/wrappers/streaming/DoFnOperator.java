@@ -696,7 +696,8 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
 
     long inputWatermarkHold = applyInputWatermarkHold(getEffectiveInputWatermark());
     if (keyCoder != null) {
-      timeServiceManager.advanceWatermark(new Watermark(inputWatermarkHold));
+      getTimeServiceManager().get().advanceWatermark(new Watermark(inputWatermarkHold));
+      //timeServiceManager.advanceWatermark(new Watermark(inputWatermarkHold));
     }
 
     long potentialOutputWatermark =

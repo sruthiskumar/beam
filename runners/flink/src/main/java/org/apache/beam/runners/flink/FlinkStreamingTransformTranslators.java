@@ -1415,6 +1415,11 @@ class FlinkStreamingTransformTranslators {
     }
 
     @Override
+    public void notifyCheckpointAborted(long l) throws Exception {
+      unboundedSourceWrapper.notifyCheckpointAborted(l);
+    }
+
+    @Override
     public void stop() {
       unboundedSourceWrapper.stop();
     }

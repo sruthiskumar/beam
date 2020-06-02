@@ -540,4 +540,9 @@ public class UnboundedSourceWrapper<OutputT, CheckpointMarkT extends UnboundedSo
       }
     }
   }
+
+  @Override
+  public void notifyCheckpointAborted(long l) throws Exception {
+    throw  new UnsupportedOperationException("Not implemented Yet");
+  }
 }
