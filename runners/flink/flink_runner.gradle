@@ -132,7 +132,7 @@ test {
 repositories {
   mavenLocal()
   maven {
-    url "https://bbc1.sics.se/archiva/repository/Hops/"
+    url "https://archiva.hops.works/repository/Hops/"
   }
 }
 
