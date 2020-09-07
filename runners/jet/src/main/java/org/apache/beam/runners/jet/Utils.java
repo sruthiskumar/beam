@@ -55,6 +55,7 @@ import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.WindowingStrategy;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Various common methods used by the Jet based runner. */
 public class Utils {
@@ -135,7 +136,9 @@ public class Utils {
       Map<TupleTag<?>, PValue> pCollections,
       Function<Map.Entry<TupleTag<?>, PValue>, T> tupleTagExtractor) {
     return pCollections.entrySet().stream()
-        .collect(Collectors.toMap(tupleTagExtractor, e -> getCoder((PCollection) e.getValue())));
+        .collect(
+            Collectors.toMap(
+                tupleTagExtractor, e -> getCoder((PCollection) e.getValue()), (v1, v2) -> v1));
   }
 
   static Map<TupleTag<?>, Coder<?>> getOutputValueCoders(
@@ -145,7 +148,7 @@ public class Utils {
         .collect(Collectors.toMap(Map.Entry::getKey, e -> ((PCollection) e.getValue()).getCoder()));
   }
 
-  static List<PCollectionView<?>> getSideInputs(AppliedPTransform<?, ?, ?> appliedTransform) {
+  static Collection<PCollectionView<?>> getSideInputs(AppliedPTransform<?, ?, ?> appliedTransform) {
     PTransform<?, ?> transform = appliedTransform.getTransform();
     if (transform instanceof ParDo.MultiOutput) {
       ParDo.MultiOutput multiParDo = (ParDo.MultiOutput) transform;
@@ -176,7 +179,7 @@ public class Utils {
       if (DoFnSignatures.requiresTimeSortedInput(doFn)) {
         throw new UnsupportedOperationException(
             String.format(
-                "%s doesn't current support @RequiresTimeSortedInput annotation.",
+                "%s doesn't currently support @RequiresTimeSortedInput annotation.",
                 JetRunner.class.getSimpleName()));
       }
       return doFn;
@@ -276,7 +279,7 @@ public class Utils {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
       if (this == o) {
         return true;
       }

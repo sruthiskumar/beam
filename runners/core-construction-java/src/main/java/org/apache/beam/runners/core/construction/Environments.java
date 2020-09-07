@@ -17,6 +17,7 @@
  */
 package org.apache.beam.runners.core.construction;
 
+import com.fasterxml.jackson.core.Base64Variants;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -27,7 +28,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import javax.annotation.Nullable;
 import org.apache.beam.model.pipeline.v1.Endpoints.ApiServiceDescriptor;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.model.pipeline.v1.RunnerApi.ArtifactInformation;
@@ -54,6 +54,7 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Immutabl
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.hash.HashCode;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.hash.Hashing;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.Files;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -215,25 +216,19 @@ public class Environments {
     Set<String> deduplicatedStagingFiles = new LinkedHashSet<>(stagingFiles);
     for (String path : deduplicatedStagingFiles) {
       File file;
-      String stagedName;
+      String stagedName = null;
       if (path.contains("=")) {
         String[] components = path.split("=", 2);
         file = new File(components[1]);
         stagedName = components[0];
       } else {
         file = new File(path);
-        stagedName = createStagingFileName(file);
       }
       // Spurious items get added to the classpath. Filter by just those that exist.
       if (file.exists()) {
         ArtifactInformation.Builder artifactBuilder = ArtifactInformation.newBuilder();
         artifactBuilder.setTypeUrn(BeamUrns.getUrn(StandardArtifacts.Types.FILE));
         artifactBuilder.setRoleUrn(BeamUrns.getUrn(StandardArtifacts.Roles.STAGING_TO));
-        artifactBuilder.setRolePayload(
-            RunnerApi.ArtifactStagingToRolePayload.newBuilder()
-                .setStagedName(stagedName)
-                .build()
-                .toByteString());
         HashCode hashCode;
         if (file.isDirectory()) {
           File zippedFile;
@@ -264,6 +259,14 @@ public class Environments {
                   .build()
                   .toByteString());
         }
+        if (stagedName == null) {
+          stagedName = createStagingFileName(file, hashCode);
+        }
+        artifactBuilder.setRolePayload(
+            RunnerApi.ArtifactStagingToRolePayload.newBuilder()
+                .setStagedName(stagedName)
+                .build()
+                .toByteString());
         artifactsBuilder.add(artifactBuilder.build());
       }
     }
@@ -311,13 +314,17 @@ public class Environments {
     capabilities.add(BeamUrns.getUrn(StandardProtocols.Enum.MULTI_CORE_BUNDLE_PROCESSING));
     capabilities.add(BeamUrns.getUrn(StandardProtocols.Enum.PROGRESS_REPORTING));
     capabilities.add("beam:version:sdk_base:" + JAVA_SDK_HARNESS_CONTAINER_URL);
+    // TODO(BEAM-10505): Add the capability back.
+    // capabilities.add(BeamUrns.getUrn(SplittableParDoComponents.TRUNCATE_SIZED_RESTRICTION));
     return capabilities.build();
   }
 
-  public static String createStagingFileName(File path) {
+  public static String createStagingFileName(File path, HashCode hash) {
+    String encodedHash = Base64Variants.MODIFIED_FOR_URL.encode(hash.asBytes());
+    String fileName = Files.getNameWithoutExtension(path.getAbsolutePath());
     String ext = path.isDirectory() ? "jar" : Files.getFileExtension(path.getAbsolutePath());
     String suffix = Strings.isNullOrEmpty(ext) ? "" : "." + ext;
-    return UUID.randomUUID().toString() + suffix;
+    return String.format("%s-%s%s", fileName, encodedHash, suffix);
   }
 
   private static File zipDirectory(File directory) throws IOException {
@@ -329,28 +336,24 @@ public class Environments {
   }
 
   private static class ProcessPayloadReferenceJSON {
-    @Nullable private String os;
-    @Nullable private String arch;
-    @Nullable private String command;
-    @Nullable private Map<String, String> env;
+    private @Nullable String os;
+    private @Nullable String arch;
+    private @Nullable String command;
+    private @Nullable Map<String, String> env;
 
-    @Nullable
-    public String getOs() {
+    public @Nullable String getOs() {
       return os;
     }
 
-    @Nullable
-    public String getArch() {
+    public @Nullable String getArch() {
       return arch;
     }
 
-    @Nullable
-    public String getCommand() {
+    public @Nullable String getCommand() {
       return command;
     }
 
-    @Nullable
-    public Map<String, String> getEnv() {
+    public @Nullable Map<String, String> getEnv() {
       return env;
     }
   }

@@ -77,8 +77,11 @@ golang {
 import com.github.jk1.license.render.*
 licenseReport {
   outputDir = 'java_third_party_licenses'
-  projects = [project.rootProject] + project.rootProject.subprojects
+  projects = [project,
+              project.rootProject.findProject(':sdks:java:harness'),
+              project.rootProject.findProject(':sdks:java:io:kafka')]
   excludeOwnGroup = true
+  excludeGroups = ["beam.*"] // project dependencies do not match their maven coords
   configurations = ALL
   renderers = [new JsonReportRenderer()]
 }
@@ -93,6 +96,8 @@ docker {
                   project.rootProject["docker-tag"] : project.sdk_version)
   dockerfile project.file("./${dockerfileName}")
   files "./build/"
+  buildArgs(['pull_licenses': project.rootProject.hasProperty(["docker-pull-licenses"]) ||
+                     project.rootProject.hasProperty(["isRelease"])])
 }
 
 if (project.rootProject.hasProperty(["docker-pull-licenses"]) ||
@@ -106,6 +111,13 @@ if (project.rootProject.hasProperty(["docker-pull-licenses"]) ||
     }
   }
   dockerPrepare.dependsOn pullLicenses
+
+  task copyGolangLicenses(type: Copy) {
+    from "${project(':release:go-licenses:java').buildDir}/output"
+    into "build/target/go-licenses"
+    dependsOn ':release:go-licenses:java:createLicenses'
+  }
+  dockerPrepare.dependsOn 'copyGolangLicenses'
 } else {
   task createFile(type: Exec) {
       executable "sh"

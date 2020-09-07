@@ -17,17 +17,27 @@
 from __future__ import absolute_import
 
 import inspect
+from typing import TYPE_CHECKING
+from typing import Any
+from typing import Dict
+from typing import Tuple
+from typing import Union
 
 from apache_beam import pvalue
 from apache_beam.dataframe import expressions
 from apache_beam.dataframe import frame_base
+from apache_beam.dataframe import schemas
 from apache_beam.dataframe import transforms
+
+if TYPE_CHECKING:
+  # pylint: disable=ungrouped-imports
+  import pandas
 
 
 # TODO: Or should this be called as_dataframe?
 def to_dataframe(
     pcoll,  # type: pvalue.PCollection
-    proxy,  # type: pandas.core.generic.NDFrame
+    proxy=None,  # type: pandas.core.generic.NDFrame
 ):
   # type: (...) -> frame_base.DeferredFrame
 
@@ -43,15 +53,25 @@ def to_dataframe(
 
   A proxy object must be given if the schema for the PCollection is not known.
   """
+  if proxy is None:
+    if pcoll.element_type is None:
+      raise ValueError(
+          "Cannot infer a proxy because the input PCollection does not have a "
+          "schema defined. Please make sure a schema type is specified for "
+          "the input PCollection, or provide a proxy.")
+    # If no proxy is given, assume this is an element-wise schema-aware
+    # PCollection that needs to be batched.
+    proxy = schemas.generate_proxy(pcoll.element_type)
+    pcoll = pcoll | 'BatchElements' >> schemas.BatchRowsAsDataFrame()
   return frame_base.DeferredFrame.wrap(
       expressions.PlaceholderExpression(proxy, pcoll))
 
 
 # TODO: Or should this be called from_dataframe?
 def to_pcollection(
-    *dataframes,  # type: Tuple[frame_base.DeferredFrame]
+    *dataframes,  # type: frame_base.DeferredFrame
     **kwargs):
-  # type: (...) -> Union[pvalue.PCollection, Tuple[pvalue.PCollection]]
+  # type: (...) -> Union[pvalue.PCollection, Tuple[pvalue.PCollection, ...]]
 
   """Converts one or more deferred dataframe-like objects back to a PCollection.
 
@@ -67,18 +87,23 @@ def to_pcollection(
   if label is None:
     # Attempt to come up with a reasonable, stable label by retrieving the name
     # of these variables in the calling context.
-    previous_frame = inspect.currentframe().f_back
+    current_frame = inspect.currentframe()
+    if current_frame is None:
+      label = 'ToDataframe(...)'
 
-    def name(obj):
-      for key, value in previous_frame.f_locals.items():
-        if obj is value:
-          return key
-      for key, value in previous_frame.f_globals.items():
-        if obj is value:
-          return key
-      return '...'
+    else:
+      previous_frame = current_frame.f_back
 
-    label = 'ToDataframe(%s)' % ', '.join(name(e) for e in dataframes)
+      def name(obj):
+        for key, value in previous_frame.f_locals.items():
+          if obj is value:
+            return key
+        for key, value in previous_frame.f_globals.items():
+          if obj is value:
+            return key
+        return '...'
+
+      label = 'ToDataframe(%s)' % ', '.join(name(e) for e in dataframes)
 
   def extract_input(placeholder):
     if not isinstance(placeholder._reference, pvalue.PCollection):
@@ -91,7 +116,8 @@ def to_pcollection(
   results = {p: extract_input(p)
              for p in placeholders
              } | label >> transforms._DataframeExpressionsTransform(
-                 dict((ix, df._expr) for ix, df in enumerate(dataframes)))
+                 dict((ix, df._expr) for ix, df in enumerate(
+                     dataframes)))  # type: Dict[Any, pvalue.PCollection]
   if len(results) == 1 and not always_return_tuple:
     return results[0]
   else:

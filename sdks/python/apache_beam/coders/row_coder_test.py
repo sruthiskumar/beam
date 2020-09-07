@@ -43,24 +43,34 @@ Person = typing.NamedTuple(
         ("age", np.int32),
         ("address", typing.Optional[unicode]),
         ("aliases", typing.List[unicode]),
+        ("knows_javascript", bool),
+        # TODO(BEAM-7372): Use bytes instead of ByteString
+        ("payload", typing.Optional[typing.ByteString]),
+        ("custom_metadata", typing.Mapping[unicode, int])
     ])
 
 coders_registry.register_coder(Person, RowCoder)
 
 
 class RowCoderTest(unittest.TestCase):
-  TEST_CASE = Person("Jon Snow", 23, None, ["crow", "wildling"])
-  TEST_CASES = [
-      TEST_CASE,
-      Person("Daenerys Targaryen", 25, "Westeros", ["Mother of Dragons"]),
-      Person("Michael Bluth", 30, None, [])
+  JON_SNOW = Person("Jon Snow", 23, None, ["crow", "wildling"], False, None, {})
+  PEOPLE = [
+      JON_SNOW,
+      Person(
+          "Daenerys Targaryen",
+          25,
+          "Westeros", ["Mother of Dragons"],
+          False,
+          None, {"dragons": 3}),
+      Person(
+          "Michael Bluth", 30, None, [], True, b"I've made a huge mistake", {})
   ]
 
   def test_create_row_coder_from_named_tuple(self):
     expected_coder = RowCoder(typing_to_runner_api(Person).row_type.schema)
     real_coder = coders_registry.get_coder(Person)
 
-    for test_case in self.TEST_CASES:
+    for test_case in self.PEOPLE:
       self.assertEqual(
           expected_coder.encode(test_case), real_coder.encode(test_case))
 
@@ -87,10 +97,26 @@ class RowCoderTest(unittest.TestCase):
                     array_type=schema_pb2.ArrayType(
                         element_type=schema_pb2.FieldType(
                             atomic_type=schema_pb2.STRING)))),
+            schema_pb2.Field(
+                name="knows_javascript",
+                type=schema_pb2.FieldType(atomic_type=schema_pb2.BOOLEAN)),
+            schema_pb2.Field(
+                name="payload",
+                type=schema_pb2.FieldType(
+                    atomic_type=schema_pb2.BYTES, nullable=True)),
+            schema_pb2.Field(
+                name="custom_metadata",
+                type=schema_pb2.FieldType(
+                    map_type=schema_pb2.MapType(
+                        key_type=schema_pb2.FieldType(
+                            atomic_type=schema_pb2.STRING),
+                        value_type=schema_pb2.FieldType(
+                            atomic_type=schema_pb2.INT64),
+                    ))),
         ])
     coder = RowCoder(schema)
 
-    for test_case in self.TEST_CASES:
+    for test_case in self.PEOPLE:
       self.assertEqual(test_case, coder.decode(coder.encode(test_case)))
 
   @unittest.skip(
@@ -182,9 +208,17 @@ class RowCoderTest(unittest.TestCase):
     with TestPipeline() as p:
       res = (
           p
-          | beam.Create(self.TEST_CASES)
+          | beam.Create(self.PEOPLE)
           | beam.Filter(lambda person: person.name == "Jon Snow"))
-      assert_that(res, equal_to([self.TEST_CASE]))
+      assert_that(res, equal_to([self.JON_SNOW]))
+
+  def test_row_coder_nested_struct(self):
+    Pair = typing.NamedTuple('Pair', [('left', Person), ('right', Person)])
+
+    value = Pair(self.PEOPLE[0], self.PEOPLE[1])
+    coder = RowCoder(typing_to_runner_api(Pair).row_type.schema)
+
+    self.assertEqual(value, coder.decode(coder.encode(value)))
 
 
 if __name__ == "__main__":

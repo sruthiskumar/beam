@@ -196,16 +196,6 @@ class Environment(object):
     if job_type.startswith('FNAPI_'):
       self.debug_options.experiments = self.debug_options.experiments or []
 
-      # TODO(BEAM-9707) : Remove hardcoding runner_harness_container for
-      #  Unified worker.
-      if _use_unified_worker(
-          options) and not self.debug_options.lookup_experiment(
-              'runner_harness_container_image'
-          ) and 'dev' in beam_version.__version__:
-        self.debug_options.add_experiment(
-            'runner_harness_container_image='
-            'gcr.io/cloud-dataflow/v1beta3/unified-harness:20200409-rc00')
-
       if self.debug_options.lookup_experiment(
           'runner_harness_container_image') or _use_unified_worker(options):
         # Default image is not used if user provides a runner harness image.
@@ -314,8 +304,15 @@ class Environment(object):
         if container_image_url in already_added_containers:
           # Do not add the pipeline environment again.
 
+          # Currently, Dataflow uses Docker container images to uniquely
+          # identify execution environments. Hence Dataflow executes all
+          # transforms that specify the the same Docker container image in a
+          # single container instance. Dependencies of all environments that
+          # specify a given container image will be staged in the container
+          # instance for that particular container image.
           # TODO(BEAM-9455): loosen this restriction to support multiple
-          # environments with the same container name.
+          # environments with the same container image when Dataflow supports
+          # environment specific artifact provisioning.
           continue
         already_added_containers.append(container_image_url)
 
@@ -583,6 +580,7 @@ class DataflowApplicationClient(object):
       raise RuntimeError('The --temp_location option must be specified.')
 
     resources = []
+    hashs = {}
     for _, env in sorted(pipeline.components.environments.items(),
                          key=lambda kv: kv[0]):
       for dep in env.dependencies:
@@ -595,7 +593,16 @@ class DataflowApplicationClient(object):
         role_payload = (
             beam_runner_api_pb2.ArtifactStagingToRolePayload.FromString(
                 dep.role_payload))
-        resources.append((type_payload.path, role_payload.staged_name))
+        if type_payload.sha256 and type_payload.sha256 in hashs:
+          _LOGGER.info(
+              'Found duplicated artifact: %s (%s)',
+              type_payload.path,
+              type_payload.sha256)
+          dep.role_payload = beam_runner_api_pb2.ArtifactStagingToRolePayload(
+              staged_name=hashs[type_payload.sha256]).SerializeToString()
+        else:
+          resources.append((type_payload.path, role_payload.staged_name))
+          hashs[type_payload.sha256] = role_payload.staged_name
 
     resource_stager = _LegacyDataflowStager(self)
     staged_resources = resource_stager.stage_job_resources(
@@ -1073,6 +1080,8 @@ def get_container_image_from_options(pipeline_options):
     version_suffix = '36'
   elif sys.version_info[0:2] == (3, 7):
     version_suffix = '37'
+  elif sys.version_info[0:2] == (3, 8):
+    version_suffix = '38'
   else:
     raise Exception(
         'Dataflow only supports Python versions 2 and 3.5+, got: %s' %
@@ -1137,7 +1146,7 @@ def get_response_encoding():
 
 
 def _verify_interpreter_version_is_supported(pipeline_options):
-  if sys.version_info[0:2] in [(2, 7), (3, 5), (3, 6), (3, 7)]:
+  if sys.version_info[0:2] in [(2, 7), (3, 5), (3, 6), (3, 7), (3, 8)]:
     return
 
   debug_options = pipeline_options.view_as(DebugOptions)
@@ -1147,7 +1156,7 @@ def _verify_interpreter_version_is_supported(pipeline_options):
 
   raise Exception(
       'Dataflow runner currently supports Python versions '
-      '2.7, 3.5, 3.6, and 3.7. To ignore this requirement and start a job '
+      '2.7, 3.5, 3.6, 3.7 and 3.8. To ignore this requirement and start a job '
       'using a different version of Python 3 interpreter, pass '
       '--experiment ignore_py3_minor_version pipeline option.')
 

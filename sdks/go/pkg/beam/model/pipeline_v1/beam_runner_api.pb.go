@@ -6,6 +6,8 @@ package pipeline_v1
 import (
 	context "context"
 	fmt "fmt"
+	math "math"
+
 	proto "github.com/golang/protobuf/proto"
 	descriptor "github.com/golang/protobuf/protoc-gen-go/descriptor"
 	_ "github.com/golang/protobuf/ptypes/any"
@@ -13,7 +15,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	math "math"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -102,10 +103,16 @@ const (
 	// See https://beam.apache.org/documentation/programming-guide/#groupbykey
 	// for additional details.
 	//
+	// Never defines an environment as the runner is required to implement this
+	// transform.
+	//
 	// Payload: None
 	StandardPTransforms_GROUP_BY_KEY StandardPTransforms_Primitives = 2
 	// A transform which produces a single empty byte array at the minimum
 	// timestamp in the GlobalWindow.
+	//
+	// Never defines an environment as the runner is required to implement this
+	// transform.
 	//
 	// Payload: None
 	StandardPTransforms_IMPULSE StandardPTransforms_Primitives = 3
@@ -1315,8 +1322,9 @@ type PTransform struct {
 	// the payload is also officially defined. See StandardPTransforms for
 	// details.
 	Spec *FunctionSpec `protobuf:"bytes,1,opt,name=spec,proto3" json:"spec,omitempty"`
-	// (Optional) if this node is a composite, a list of the ids of
-	// transforms that it contains.
+	// (Optional) A list of the ids of transforms that it contains.
+	//
+	// Primitive transforms are not allowed to specify this.
 	Subtransforms []string `protobuf:"bytes,2,rep,name=subtransforms,proto3" json:"subtransforms,omitempty"`
 	// (Required) A map from local names of inputs (unique only with this map, and
 	// likely embedded in the transform payload and serialized user code) to
@@ -1344,9 +1352,10 @@ type PTransform struct {
 	// (Optional) Static display data for this PTransform application. If
 	// there is none, it may be omitted.
 	DisplayData []*DisplayData `protobuf:"bytes,6,rep,name=display_data,json=displayData,proto3" json:"display_data,omitempty"`
-	// (Optional) Environment where the current PTransform should be executed in.
-	// Runner that executes the pipeline may choose to override this if needed. If
-	// not specified, environment will be decided by the runner.
+	// Environment where the current PTransform should be executed in.
+	//
+	// Transforms that are required to be implemented by a runner must omit this.
+	// All other transforms are required to specify this.
 	EnvironmentId        string   `protobuf:"bytes,7,opt,name=environment_id,json=environmentId,proto3" json:"environment_id,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`

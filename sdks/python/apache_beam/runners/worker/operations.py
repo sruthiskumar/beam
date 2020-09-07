@@ -106,26 +106,43 @@ class ConsumerSet(Receiver):
              step_name,  # type: str
              output_index,
              consumers,  # type: List[Operation]
-             coder
-            ):
+             coder,
+             producer_type_hints
+             ):
     # type: (...) -> ConsumerSet
     if len(consumers) == 1:
       return SingletonConsumerSet(
-          counter_factory, step_name, output_index, consumers, coder)
+          counter_factory,
+          step_name,
+          output_index,
+          consumers,
+          coder,
+          producer_type_hints)
     else:
       return ConsumerSet(
-          counter_factory, step_name, output_index, consumers, coder)
+          counter_factory,
+          step_name,
+          output_index,
+          consumers,
+          coder,
+          producer_type_hints)
 
   def __init__(self,
                counter_factory,
                step_name,  # type: str
                output_index,
                consumers,  # type: List[Operation]
-               coder
-              ):
+               coder,
+               producer_type_hints
+               ):
     self.consumers = consumers
+
     self.opcounter = opcounters.OperationCounters(
-        counter_factory, step_name, coder, output_index)
+        counter_factory,
+        step_name,
+        coder,
+        output_index,
+        producer_type_hints=producer_type_hints)
     # Used in repr.
     self.step_name = step_name
     self.output_index = output_index
@@ -182,11 +199,17 @@ class SingletonConsumerSet(ConsumerSet):
                step_name,
                output_index,
                consumers,  # type: List[Operation]
-               coder
-              ):
+               coder,
+               producer_type_hints
+               ):
     assert len(consumers) == 1
     super(SingletonConsumerSet, self).__init__(
-        counter_factory, step_name, output_index, consumers, coder)
+        counter_factory,
+        step_name,
+        output_index,
+        consumers,
+        coder,
+        producer_type_hints)
     self.consumer = consumers[0]
 
   def receive(self, windowed_value):
@@ -276,7 +299,8 @@ class Operation(object):
                 self.name_context.logging_name(),
                 i,
                 self.consumers[i],
-                coder) for i,
+                coder,
+                self._get_runtime_performance_hints()) for i,
             coder in enumerate(self.spec.output_coders)
         ]
     self.setup_done = True
@@ -452,6 +476,13 @@ class Operation(object):
 
     return '<%s %s>' % (printable_name, ', '.join(printable_fields))
 
+  def _get_runtime_performance_hints(self):
+    # type: () -> Optional[Dict[Optional[str], Tuple[Optional[str], Any]]]
+
+    """Returns any type hints required for performance runtime
+    type-checking."""
+    return None
+
 
 class ReadOperation(Operation):
   def start(self):
@@ -479,13 +510,15 @@ class ImpulseReadOperation(Operation):
     super(ImpulseReadOperation,
           self).__init__(name_context, None, counter_factory, state_sampler)
     self.source = source
+
     self.receivers = [
         ConsumerSet.create(
             self.counter_factory,
             self.name_context.step_name,
             0,
             next(iter(consumers.values())),
-            output_coder)
+            output_coder,
+            self._get_runtime_performance_hints())
     ]
 
   def process(self, unused_impulse):
@@ -518,7 +551,7 @@ class _TaggedReceivers(dict):
 
   def __missing__(self, tag):
     self[tag] = receiver = ConsumerSet(
-        self._counter_factory, self._step_name, tag, [], None)
+        self._counter_factory, self._step_name, tag, [], None, None)
     return receiver
 
   def total_output_bytes(self):
@@ -742,6 +775,27 @@ class DoOperation(Operation):
         infos[monitoring_infos.to_key(sampled_byte_count)] = sampled_byte_count
     return infos
 
+  def _get_runtime_performance_hints(self):
+    fns = pickler.loads(self.spec.serialized_fn)
+    if fns and hasattr(fns[0], '_runtime_output_constraints'):
+      return fns[0]._runtime_output_constraints
+
+    return {}
+
+
+class SdfTruncateSizedRestrictions(DoOperation):
+  def __init__(self, *args, **kwargs):
+    super(SdfTruncateSizedRestrictions, self).__init__(*args, **kwargs)
+
+  def current_element_progress(self):
+    # type: () -> Optional[iobase.RestrictionProgress]
+    return self.receivers[0].current_element_progress()
+
+  def try_split(
+      self, fraction_of_remainder
+  ):  # type: (...) -> Optional[Tuple[Iterable[SdfSplitResultsPrimary], Iterable[SdfSplitResultsResidual]]]
+    return self.receivers[0].try_split(fraction_of_remainder)
+
 
 class SdfProcessSizedElements(DoOperation):
   def __init__(self, *args, **kwargs):
@@ -761,21 +815,24 @@ class SdfProcessSizedElements(DoOperation):
             receiver.opcounter.restart_sampling()
         # Actually processing the element can be expensive; do it without
         # the lock.
-        delayed_application = self.dofn_runner.process_with_sized_restriction(o)
-        if delayed_application:
+        delayed_applications = self.dofn_runner.process_with_sized_restriction(
+            o)
+        if delayed_applications:
           assert self.execution_context is not None
-          self.execution_context.delayed_applications.append(
-              (self, delayed_application))
+          for delayed_application in delayed_applications:
+            self.execution_context.delayed_applications.append(
+                (self, delayed_application))
       finally:
         with self.lock:
           self.element_start_output_bytes = None
 
   def try_split(self, fraction_of_remainder):
-    # type: (...) -> Optional[Tuple[SdfSplitResultsPrimary, SdfSplitResultsResidual]]
+    # type: (...) -> Optional[Tuple[Iterable[SdfSplitResultsPrimary], Iterable[SdfSplitResultsResidual]]]
     split = self.dofn_runner.try_split(fraction_of_remainder)
     if split:
-      primary, residual = split
-      return (self, primary), (self, residual)
+      primaries, residuals = split
+      return [(self, primary) for primary in primaries
+              ], [(self, residual) for residual in residuals]
     return None
 
   def current_element_progress(self):

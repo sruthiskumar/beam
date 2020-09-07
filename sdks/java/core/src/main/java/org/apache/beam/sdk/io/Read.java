@@ -27,7 +27,7 @@ import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
-import javax.annotation.Nullable;
+import java.util.Set;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.InstantCoder;
@@ -57,13 +57,14 @@ import org.apache.beam.sdk.util.NameUtils;
 import org.apache.beam.sdk.util.SerializableUtils;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.sdk.values.PCollection.IsBounded;
 import org.apache.beam.sdk.values.TimestampedValue;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.ValueWithRecordId;
 import org.apache.beam.sdk.values.ValueWithRecordId.StripIdsDoFn;
 import org.apache.beam.sdk.values.ValueWithRecordId.ValueWithRecordIdCoder;
 import org.apache.beam.sdk.values.WindowingStrategy;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableSet;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
@@ -135,9 +136,7 @@ public class Read {
     public final PCollection<T> expand(PBegin input) {
       source.validate();
 
-      if (ExperimentalOptions.hasExperiment(input.getPipeline().getOptions(), "beam_fn_api")
-          && !ExperimentalOptions.hasExperiment(
-              input.getPipeline().getOptions(), "beam_fn_api_use_deprecated_read")) {
+      if (useSdf(input.getPipeline().getOptions())) {
         // We don't use Create here since Create is defined as a BoundedSource and using it would
         // cause an infinite expansion loop. We can reconsider this if Create is implemented
         // directly as a SplittableDoFn.
@@ -154,7 +153,7 @@ public class Read {
       return PCollection.createPrimitiveOutputInternal(
           input.getPipeline(),
           WindowingStrategy.globalDefault(),
-          IsBounded.BOUNDED,
+          PCollection.IsBounded.BOUNDED,
           source.getOutputCoder());
     }
 
@@ -210,9 +209,7 @@ public class Read {
     public final PCollection<T> expand(PBegin input) {
       source.validate();
 
-      if (ExperimentalOptions.hasExperiment(input.getPipeline().getOptions(), "beam_fn_api")
-          && !ExperimentalOptions.hasExperiment(
-              input.getPipeline().getOptions(), "beam_fn_api_use_deprecated_read")) {
+      if (useSdf(input.getPipeline().getOptions())) {
         // We don't use Create here since Create is defined as a BoundedSource and using it would
         // cause an infinite expansion loop. We can reconsider this if Create is implemented
         // directly as a SplittableDoFn.
@@ -244,7 +241,7 @@ public class Read {
       return PCollection.createPrimitiveOutputInternal(
           input.getPipeline(),
           WindowingStrategy.globalDefault(),
-          IsBounded.UNBOUNDED,
+          PCollection.IsBounded.UNBOUNDED,
           source.getOutputCoder());
     }
 
@@ -295,8 +292,14 @@ public class Read {
         OutputReceiver<BoundedSource<T>> receiver,
         PipelineOptions pipelineOptions)
         throws Exception {
-      for (BoundedSource<T> split :
-          restriction.split(DEFAULT_DESIRED_BUNDLE_SIZE_BYTES, pipelineOptions)) {
+      long estimatedSize = restriction.getEstimatedSizeBytes(pipelineOptions);
+      // Split into pieces as close to the default desired bundle size but if that would cause too
+      // few splits then prefer to split up to the default desired number of splits.
+      long splitBundleSize =
+          Math.min(
+              DEFAULT_DESIRED_BUNDLE_SIZE_BYTES,
+              Math.max(1L, estimatedSize / DEFAULT_DESIRED_NUM_SPLITS));
+      for (BoundedSource<T> split : restriction.split(splitBundleSize, pipelineOptions)) {
         receiver.output(split);
       }
     }
@@ -413,8 +416,12 @@ public class Read {
         if (currentReader == null) {
           return null;
         }
-        double consumedFraction = currentReader.getFractionConsumed();
-        double fraction = consumedFraction + (1 - consumedFraction) * fractionOfRemainder;
+        Double consumedFraction = currentReader.getFractionConsumed();
+        double fraction = fractionOfRemainder;
+        if (consumedFraction != null) {
+          fraction = consumedFraction + (1 - consumedFraction) * fractionOfRemainder;
+        }
+
         BoundedSource<T> residual = currentReader.splitAtFraction(fraction);
         if (residual == null) {
           return null;
@@ -429,6 +436,11 @@ public class Read {
             claimedAll,
             "Expected all records to have been claimed but finished processing "
                 + "bounded source while some records may have not been read.");
+      }
+
+      @Override
+      public IsBounded isBounded() {
+        return IsBounded.BOUNDED;
       }
     }
   }
@@ -446,7 +458,6 @@ public class Read {
       extends DoFn<UnboundedSource<OutputT, CheckpointT>, ValueWithRecordId<OutputT>> {
 
     private static final Logger LOG = LoggerFactory.getLogger(UnboundedSourceAsSDFWrapperFn.class);
-    private static final int DEFAULT_DESIRED_NUM_SPLITS = 20;
     private static final int DEFAULT_BUNDLE_FINALIZATION_LIMIT_MINS = 10;
     private final Coder<CheckpointT> checkpointCoder;
 
@@ -512,7 +523,7 @@ public class Read {
           tracker.currentRestriction();
 
       UnboundedSourceValue<OutputT>[] out = new UnboundedSourceValue[1];
-      while (tracker.tryClaim(out)) {
+      while (tracker.tryClaim(out) && out[0] != null) {
         receiver.outputWithTimestamp(
             new ValueWithRecordId<>(out[0].getValue(), out[0].getId()), out[0].getTimestamp());
       }
@@ -612,8 +623,7 @@ public class Read {
 
       public abstract UnboundedSource<OutputT, CheckpointT> getSource();
 
-      @Nullable
-      public abstract CheckpointT getCheckpoint();
+      public abstract @Nullable CheckpointT getCheckpoint();
 
       public abstract Instant getWatermark();
     }
@@ -725,7 +735,7 @@ public class Read {
 
         @Override
         public Instant getWatermark() {
-          throw new UnsupportedOperationException("getWatermark is never meant to be invoked.");
+          return BoundedWindow.TIMESTAMP_MAX_VALUE;
         }
 
         @Override
@@ -784,13 +794,18 @@ public class Read {
                     .getSource()
                     .createReader(pipelineOptions, initialRestriction.getCheckpoint());
           }
+          if (currentReader instanceof EmptyUnboundedSource.EmptyUnboundedReader) {
+            return false;
+          }
           if (!readerHasBeenStarted) {
             readerHasBeenStarted = true;
             if (!currentReader.start()) {
-              return false;
+              position[0] = null;
+              return true;
             }
           } else if (!currentReader.advance()) {
-            return false;
+            position[0] = null;
+            return true;
           }
           position[0] =
               UnboundedSourceValue.create(
@@ -836,16 +851,20 @@ public class Read {
       @Override
       public SplitResult<UnboundedSourceRestriction<OutputT, CheckpointT>> trySplit(
           double fractionOfRemainder) {
-        // Don't split if we have claimed all since the SDF wrapper will be finishing soon.
+        // Don't split if we have the empty sources since the SDF wrapper will be finishing soon.
+        UnboundedSourceRestriction<OutputT, CheckpointT> currentRestriction = currentRestriction();
+        if (currentRestriction.getSource() instanceof EmptyUnboundedSource) {
+          return null;
+        }
+
         // Our split result sets the primary to have no checkpoint mark associated
         // with it since when we resume we don't have any state but we specifically pass
         // the checkpoint mark to the current reader so that when we finish the current bundle
         // we may register for finalization.
-        UnboundedSourceRestriction<OutputT, CheckpointT> currentRestriction = currentRestriction();
         SplitResult<UnboundedSourceRestriction<OutputT, CheckpointT>> result =
             SplitResult.of(
                 UnboundedSourceRestriction.create(
-                    EmptyUnboundedSource.INSTANCE, null, currentRestriction.getWatermark()),
+                    EmptyUnboundedSource.INSTANCE, null, BoundedWindow.TIMESTAMP_MAX_VALUE),
                 currentRestriction);
         currentReader =
             EmptyUnboundedSource.INSTANCE.createReader(null, currentRestriction.getCheckpoint());
@@ -858,6 +877,11 @@ public class Read {
             currentReader instanceof EmptyUnboundedSource.EmptyUnboundedReader,
             "Expected all records to have been claimed but finished processing "
                 + "unbounded source while some records may have not been read.");
+      }
+
+      @Override
+      public IsBounded isBounded() {
+        return IsBounded.UNBOUNDED;
       }
 
       @Override
@@ -895,5 +919,34 @@ public class Read {
         return RestrictionTracker.Progress.from(0, 1);
       }
     }
+  }
+
+  private static final int DEFAULT_DESIRED_NUM_SPLITS = 20;
+
+  /**
+   * Used to migrate runners to use splittable DoFn without needing to rely on PTransform
+   * replacement which allows removal of the migration code without changing the pipeline shape
+   * since pipeline shape affects pipeline update for some runners.
+   */
+  private static final Set<String> SPLITTABLE_DOFN_PREFERRED_RUNNERS =
+      ImmutableSet.of("DirectRunner", "Twister2Runner", "Twister2TestRunner");
+
+  private static boolean useSdf(PipelineOptions options) {
+    // TODO(BEAM-10670): Make this by default true and have runners opt-out instead.
+    boolean runnerPrefersSdf = false;
+    try {
+      runnerPrefersSdf =
+          SPLITTABLE_DOFN_PREFERRED_RUNNERS.contains(options.getRunner().getSimpleName());
+    } catch (Exception e) {
+      // Ignore construction failures since there may not be a runner on the classpath if this is a
+      // test.
+    }
+
+    // We keep the old names of experiments around for portable runners and existing users.
+    return (runnerPrefersSdf
+            || ExperimentalOptions.hasExperiment(options, "beam_fn_api")
+            || ExperimentalOptions.hasExperiment(options, "use_sdf_read"))
+        && !(ExperimentalOptions.hasExperiment(options, "beam_fn_api_use_deprecated_read")
+            || ExperimentalOptions.hasExperiment(options, "use_deprecated_read"));
   }
 }

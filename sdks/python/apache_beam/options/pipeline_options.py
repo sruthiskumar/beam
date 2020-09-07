@@ -245,6 +245,8 @@ class PipelineOptions(HasDisplayData):
       elif isinstance(v, list):
         for i in v:
           flags.append('--%s=%s' % (k, i))
+      elif isinstance(v, dict):
+        flags.append('--%s=%s' % (k, json.dumps(v)))
       else:
         flags.append('--%s=%s' % (k, v))
 
@@ -466,6 +468,13 @@ class TypeOptions(PipelineOptions):
         help='Enable type checking at pipeline execution '
         'time. NOTE: only supported with the '
         'DirectRunner')
+    parser.add_argument(
+        '--performance_runtime_type_check',
+        default=False,
+        action='store_true',
+        help='Enable faster type checking via sampling at pipeline execution '
+        'time. NOTE: only supported with portable runners '
+        '(including the DirectRunner)')
 
 
 class DirectOptions(PipelineOptions):
@@ -600,11 +609,32 @@ class GoogleCloudOptions(PipelineOptions):
         choices=['COST_OPTIMIZED', 'SPEED_OPTIMIZED'],
         help='Set the Flexible Resource Scheduling mode')
 
+  def _create_default_gcs_bucket(self):
+    try:
+      from apache_beam.io.gcp import gcsio
+    except ImportError:
+      _LOGGER.warning('Unable to create default GCS bucket.')
+      return None
+    bucket = gcsio.get_or_create_default_gcs_bucket(self)
+    if bucket:
+      return 'gs://%s' % bucket.id
+    else:
+      return None
+
   def validate(self, validator):
     errors = []
     if validator.is_service_runner():
       errors.extend(validator.validate_cloud_options(self))
-      errors.extend(validator.validate_gcs_path(self, 'temp_location'))
+
+      # Validating temp_location, or adding a default if there are issues
+      temp_location_errors = validator.validate_gcs_path(self, 'temp_location')
+      if temp_location_errors:
+        default_bucket = self._create_default_gcs_bucket()
+        if default_bucket is None:
+          errors.extend(temp_location_errors)
+        else:
+          setattr(self, 'temp_location', default_bucket)
+
       if getattr(self, 'staging_location',
                  None) or getattr(self, 'temp_location', None) is None:
         errors.extend(validator.validate_gcs_path(self, 'staging_location'))

@@ -39,6 +39,7 @@ import com.google.api.services.dataflow.model.Job;
 import com.google.api.services.dataflow.model.ListJobsResponse;
 import com.google.api.services.dataflow.model.WorkerPool;
 import java.io.BufferedWriter;
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
@@ -55,7 +56,6 @@ import java.util.Random;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -122,6 +122,7 @@ import org.apache.beam.sdk.runners.PTransformOverrideFactory;
 import org.apache.beam.sdk.runners.TransformHierarchy;
 import org.apache.beam.sdk.runners.TransformHierarchy.Node;
 import org.apache.beam.sdk.state.MapState;
+import org.apache.beam.sdk.state.OrderedListState;
 import org.apache.beam.sdk.state.SetState;
 import org.apache.beam.sdk.transforms.Combine;
 import org.apache.beam.sdk.transforms.Combine.CombineFn;
@@ -211,8 +212,8 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
 
   @VisibleForTesting static final int GCS_UPLOAD_BUFFER_SIZE_BYTES_DEFAULT = 1024 * 1024;
 
-  @VisibleForTesting static final String PIPELINE_FILE_FORMAT = "pipeline-%s.pb";
-  @VisibleForTesting static final String DATAFLOW_GRAPH_FILE_FORMAT = "dataflow_graph-%s.json";
+  @VisibleForTesting static final String PIPELINE_FILE_NAME = "pipeline.pb";
+  @VisibleForTesting static final String DATAFLOW_GRAPH_FILE_NAME = "dataflow_graph.json";
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -258,7 +259,7 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
     }
     if (missing.size() > 0) {
       throw new IllegalArgumentException(
-          "Missing required values: " + Joiner.on(',').join(missing));
+          "Missing required pipeline options: " + Joiner.on(',').join(missing));
     }
 
     validateWorkerSettings(PipelineOptionsValidator.validate(GcpOptions.class, options));
@@ -290,7 +291,28 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
       validator.validateOutputFilePrefixSupported(dataflowOptions.getSaveProfilesToGcs());
     }
 
-    if (dataflowOptions.getFilesToStage() == null) {
+    if (dataflowOptions.getFilesToStage() != null) {
+      // The user specifically requested these files, so fail now if they do not exist.
+      // (automatically detected classpath elements are permitted to not exist, so later
+      // staging will not fail on nonexistent files)
+      dataflowOptions.getFilesToStage().stream()
+          .forEach(
+              stagedFileSpec -> {
+                File localFile;
+                if (stagedFileSpec.contains("=")) {
+                  String[] components = stagedFileSpec.split("=", 2);
+                  localFile = new File(components[1]);
+                } else {
+                  localFile = new File(stagedFileSpec);
+                }
+                if (!localFile.exists()) {
+                  // should be FileNotFoundException, but for build-time backwards compatibility
+                  // cannot add checked exception
+                  throw new RuntimeException(
+                      String.format("Non-existent files specified in filesToStage: %s", localFile));
+                }
+              });
+    } else {
       dataflowOptions.setFilesToStage(
           detectClassPathResourcesToStage(DataflowRunner.class.getClassLoader(), options));
       if (dataflowOptions.getFilesToStage().isEmpty()) {
@@ -893,10 +915,7 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
     LOG.info("Staging pipeline description to {}", options.getStagingLocation());
     byte[] serializedProtoPipeline = jobSpecification.getPipelineProto().toByteArray();
     DataflowPackage stagedPipeline =
-        options
-            .getStager()
-            .stageToFile(
-                serializedProtoPipeline, String.format(PIPELINE_FILE_FORMAT, UUID.randomUUID()));
+        options.getStager().stageToFile(serializedProtoPipeline, PIPELINE_FILE_NAME);
     dataflowOptions.setPipelineUrl(stagedPipeline.getLocation());
 
     if (!isNullOrEmpty(dataflowOptions.getDataflowWorkerJar())) {
@@ -996,7 +1015,7 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
               .getStager()
               .stageToFile(
                   DataflowPipelineTranslator.jobToString(newJob).getBytes(UTF_8),
-                  String.format(DATAFLOW_GRAPH_FILE_FORMAT, UUID.randomUUID()));
+                  DATAFLOW_GRAPH_FILE_NAME);
       newJob.getSteps().clear();
       newJob.setStepsLocation(stagedGraph.getLocation());
     }
@@ -1357,11 +1376,11 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
             PropertyNames.PUBSUB_ID_ATTRIBUTE, overriddenTransform.getIdAttribute());
       }
       // In both cases, the transform needs to read PubsubMessage. However, in case it needs
-      // the attributes, we supply an identity "parse fn" so the worker will read PubsubMessage's
-      // from Windmill and simply pass them around; and in case it doesn't need attributes,
-      // we're already implicitly using a "Coder" that interprets the data as a PubsubMessage's
-      // payload.
-      if (overriddenTransform.getNeedsAttributes()) {
+      // the attributes or messageId, we supply an identity "parse fn" so the worker will
+      // read PubsubMessage's from Windmill and simply pass them around; and in case it
+      // doesn't need attributes, we're already implicitly using a "Coder" that interprets
+      // the data as a PubsubMessage's payload.
+      if (overriddenTransform.getNeedsAttributes() || overriddenTransform.getNeedsMessageId()) {
         stepContext.addInput(
             PropertyNames.PUBSUB_SERIALIZED_ATTRIBUTES_FN,
             byteArrayToJsonString(serializeToByteArray(new IdentityMessageFn())));
@@ -2038,6 +2057,12 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
           String.format(
               "%s does not currently support %s",
               DataflowRunner.class.getSimpleName(), MapState.class.getSimpleName()));
+    }
+    if (DoFnSignatures.usesOrderedListState(fn)) {
+      throw new UnsupportedOperationException(
+          String.format(
+              "%s does not currently support %s",
+              DataflowRunner.class.getSimpleName(), OrderedListState.class.getSimpleName()));
     }
     if (streaming && DoFnSignatures.requiresTimeSortedInput(fn)) {
       throw new UnsupportedOperationException(
