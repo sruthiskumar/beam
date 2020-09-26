@@ -86,7 +86,7 @@ public interface FlinkPipelineOptions
   @Description(
       "The interval in milliseconds at which to trigger checkpoints of the running pipeline. "
           + "Default: No checkpointing.")
-  @Default.Long(-1L)
+  @Default.Long(5000L)
   Long getCheckpointingInterval();
 
   void setCheckpointingInterval(Long interval);
