@@ -127,6 +127,7 @@ task run(type: JavaExec) {
   }
 
   environment "LD_LIBRARY_PATH","/home/sruthiskumar92/"
+  // environment "DYLD_LIBRARY_PATH","/Users/sruthi/Documents/Thesis/mysql-cluster-8.0.19/mysql-cluster-8.0.19/lib"
   main = "org.apache.beam.sdk.nexmark.Main"
   classpath = configurations.gradleRun
   args nexmarkArgsStr.split()

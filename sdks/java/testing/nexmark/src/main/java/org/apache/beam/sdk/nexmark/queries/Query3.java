@@ -225,7 +225,7 @@ public class Query3 extends NexmarkQueryTransform<NameCityStateId> {
           } else {
             LOG.error("Conflicting persons {} and {}", theNewPerson, newPerson);
           }
-          fatalCounter.inc();
+//          fatalCounter.inc();
           continue;
         }
         newPersonCounter.inc();
