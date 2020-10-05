@@ -141,7 +141,7 @@ public interface FlinkPipelineOptions
           + "shutdown (=Flink job finishes) once all input has been processed. Unless explicitly set, this will "
           + "default to Long.MAX_VALUE when checkpointing is enabled and to 0 when checkpointing is disabled. "
           + "See https://issues.apache.org/jira/browse/FLINK-2491 for progress on this issue.")
-  @Default.Long(35000L)
+  @Default.Long(60000L)
   Long getShutdownSourcesAfterIdleMs();
 
   void setShutdownSourcesAfterIdleMs(Long timeoutMs);

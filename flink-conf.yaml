@@ -118,7 +118,7 @@ state.backend: ndb
 # state backends.
 #
 state.checkpoints.dir: file:///tmp/flink-checkpoints
-state.backend.ndb.connectionstring: localhost
+state.backend.ndb.connectionstring: 10.132.0.34
 state.backend.ndb.dbname: flinkndb
 
 # Default target directory for savepoints, optional.
